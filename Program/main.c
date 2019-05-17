@@ -159,7 +159,7 @@ int8_t checkPacket( uint8_t *pMsg1, uint8_t *pMsg2 )
 #define RESP_RX_TIMEOUT_UUS 2700
 
 /* Preamble timeout, in multiple of PAC size. See NOTE 6 below. */
-#define PRE_TIMEOUT 312
+#define PRE_TIMEOUT (312*3+80)
 
 static uint64_t get_tx_timestamp_u64( void )
 {
@@ -372,8 +372,8 @@ void DEMO_SSTWR_INITIATOR( void )
 /* Delay between frames, in UWB microseconds. See NOTE 4 below. */
 /* This is the delay from Frame RX timestamp to TX reply timestamp used for calculating/setting the DW1000's delayed TX function. This includes the
  * frame length of approximately 2.46 ms with above configuration. */
-//#define POLL_RX_TO_RESP_TX_DLY_UUS 2600
-#define POLL_RX_TO_RESP_TX_DLY_UUS 320
+#define POLL_RX_TO_RESP_TX_DLY_UUS 2600
+//#define POLL_RX_TO_RESP_TX_DLY_UUS 320
 
 /* This is the delay from the end of the frame transmission to the enable of the receiver, as programmed for the DW1000's wait for response feature. */
 #define RESP_TX_TO_FINAL_RX_DLY_UUS 500
@@ -382,7 +382,7 @@ void DEMO_SSTWR_INITIATOR( void )
 #define FINAL_RX_TIMEOUT_UUS 3300
 
 /* Preamble timeout, in multiple of PAC size. See NOTE 6 below. */
-#define PRE_TIMEOUT 312
+#define PRE_TIMEOUT (312*3+80)
 
 
 
@@ -395,10 +395,8 @@ void DEMO_SSTWR_RESPONDER( void )
   static uint8_t rx_final_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0x23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 	/*修改后的代码20190305*/
-	rx_poll_msg[5]= MODULE1;	//不同接收模块具有不同的该值
-//	rx_poll_msg[5]= MODULE2;	
-//	rx_poll_msg[5]= MODULE3;	
-//	rx_poll_msg[5]= MODULE4;	
+	rx_poll_msg[5]= MODULE1;	//车1
+//	rx_poll_msg[5]= MODULE2;	//车2
 	
   /* Buffer to store received response message.
    * Its size is adjusted to longest frame that this example code is supposed to handle. */
@@ -415,148 +413,154 @@ void DEMO_SSTWR_RESPONDER( void )
   DWT_SetPreambleDetectTimeout(PRE_TIMEOUT);
 
   while (1) {
+		/**	添加多对一机制，即一个接收者，多个发送者
+		*		设i个发送者。
+		*/
+		for(uint8_t i = 0; i < 2; i++){
+			rx_poll_msg[6] = i;
+			/* Clear reception timeout to start next ranging process. */
+			DWT_SetRxTimeout(0);
 
-    /* Clear reception timeout to start next ranging process. */
-    DWT_SetRxTimeout(0);
+			/* Activate reception immediately. */
+			DWT_RxEnable(DWT_RX_IMMEDIATE);
 
-    /* Activate reception immediately. */
-    DWT_RxEnable(DWT_RX_IMMEDIATE);
+			/* Poll for reception of a frame or error/timeout. See NOTE 8 below. */
+			do {
+				status = DWT_GetSysStatus();
+			} while (!(status & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)));
 
-    /* Poll for reception of a frame or error/timeout. See NOTE 8 below. */
-    do {
-      status = DWT_GetSysStatus();
-    } while (!(status & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)));
+			if (status & SYS_STATUS_RXFCG) {
 
-    if (status & SYS_STATUS_RXFCG) {
+				/* Clear good RX frame event in the DW1000 status register. */
+				DWT_SetSysStatus(SYS_STATUS_RXFCG);
 
-      /* Clear good RX frame event in the DW1000 status register. */
-      DWT_SetSysStatus(SYS_STATUS_RXFCG);
+				/* A frame has been received, read it into the local buffer. */
+				frameLen = DWT_ReadData32(DW1000_RX_FINFO, 0x00) & 0x000003FF;
+				if (frameLen <= 1024) {
+					DWT_ReadRxData(rx_resp_buffer, frameLen, 0);
+				}
 
-      /* A frame has been received, read it into the local buffer. */
-      frameLen = DWT_ReadData32(DW1000_RX_FINFO, 0x00) & 0x000003FF;
-      if (frameLen <= 1024) {
-        DWT_ReadRxData(rx_resp_buffer, frameLen, 0);
-      }
+				/* Check that the frame is the expected response from the companion "DS TWR responder" example.
+				 * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
+				rx_resp_buffer[ALL_MSG_SN_IDX] = 0;
+				if (memcmp(rx_resp_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0) {
 
-      /* Check that the frame is the expected response from the companion "DS TWR responder" example.
-       * As the sequence number field of the frame is not relevant, it is cleared to simplify the validation of the frame. */
-      rx_resp_buffer[ALL_MSG_SN_IDX] = 0;
-      if (memcmp(rx_resp_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0) {
+					/* Retrieve poll reception timestamp. */
+					poll_rx_ts = get_rx_timestamp_u64();
 
-        /* Retrieve poll reception timestamp. */
-        poll_rx_ts = get_rx_timestamp_u64();
+					/* Set send time for response. See NOTE 9 below. */
+					resp_tx_time = (poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+					DWT_SetDelayedTxRxTime(resp_tx_time);
 
-        /* Set send time for response. See NOTE 9 below. */
-        resp_tx_time = (poll_rx_ts + (POLL_RX_TO_RESP_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
-        DWT_SetDelayedTxRxTime(resp_tx_time);
+					/* Set expected delay and timeout for final message reception. See NOTE 4 and 5 below. */
+					DWT_SetRxAfterTxDelay(RESP_TX_TO_FINAL_RX_DLY_UUS);
+					DWT_SetRxTimeout(FINAL_RX_TIMEOUT_UUS);
 
-        /* Set expected delay and timeout for final message reception. See NOTE 4 and 5 below. */
-        DWT_SetRxAfterTxDelay(RESP_TX_TO_FINAL_RX_DLY_UUS);
-        DWT_SetRxTimeout(FINAL_RX_TIMEOUT_UUS);
-
-				//*--------------------------*/
-				resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFE)) << 8) + TX_ANT_DLY;
-				resp_msg_set_ts(&tx_resp_msg[5], poll_rx_ts);
-				resp_msg_set_ts(&tx_resp_msg[9], resp_tx_ts);
-				//*--------------------------*/
-				
-        /* Write and send the response message. See NOTE 10 below.*/
-        tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-        DWT_WriteTxData(sizeof(tx_resp_msg), tx_resp_msg, 0); /* Zero offset in TX buffer. */
-        DWT_WriteTxFCtrl(sizeof(tx_resp_msg), 0, 0); /* Zero offset in TX buffer, ranging. */
-        status = DWT_StartTx(DWT_TX_DELAYED | DWT_RESPONSE);
-
-        /* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. See NOTE 11 below. */
-        if (status == HAL_ERROR) {
-          continue;
-        }
-
-        /* Poll for reception of expected "final" frame or error/timeout. See NOTE 8 below. */
-        do {
-          status = DWT_GetSysStatus();
-        } while (!(status & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)));
-
-        /* Increment frame sequence number after transmission of the response message (modulo 256). */
-        frame_seq_nb++;
-
-        if (status & SYS_STATUS_RXFCG) {
-  //        LED_R_Toggle(); //考虑到红灯对黄灯的视觉影响，先将红灯注释掉20190215
-          /* Clear good RX frame event and TX frame sent in the DW1000 status register. */
-          DWT_SetSysStatus(SYS_STATUS_RXFCG | SYS_STATUS_TXFRS);
-
-          /* A frame has been received, read it into the local buffer. */
-          frameLen = DWT_ReadData32(DW1000_RX_FINFO, 0x00) & 0x0000007FUL;
-          if (frameLen <= RX_RESP_BUF_LEN) {
-            DWT_ReadRxData(rx_resp_buffer, frameLen, 0);
-          }
-
-          /* Check that the frame is a final message sent by "DS TWR initiator" example.
-           * As the sequence number field of the frame is not used in this example, it can be zeroed to ease the validation of the frame. */
-          rx_resp_buffer[ALL_MSG_SN_IDX] = 0;
-          
-          if (checkPacket(rx_resp_buffer, rx_final_msg) == 0) {
-            uint32_t poll_tx_ts, resp_rx_ts, final_tx_ts;
-            uint32_t poll_rx_ts_32, resp_tx_ts_32, final_rx_ts_32;
-            float64_t Ra, Rb, Da, Db;
-            int64_t tof_dtu;
-
-            /* Retrieve response transmission and final reception timestamps. */
-            resp_tx_ts  = get_tx_timestamp_u64();
-            final_rx_ts = get_rx_timestamp_u64();
-
-            /* Get timestamps embedded in the final message. */
-            final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_POLL_TX_TS_IDX], &poll_tx_ts);
-            final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_RESP_RX_TS_IDX], &resp_rx_ts);
-            final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_FINAL_TX_TS_IDX], &final_tx_ts);
-
-            /* Compute time of flight. 32-bit subtractions give correct answers even if clock has wrapped. See NOTE 12 below. */
-            poll_rx_ts_32 = (uint32_t)poll_rx_ts;
-            resp_tx_ts_32 = (uint32_t)resp_tx_ts;
-            final_rx_ts_32 = (uint32_t)final_rx_ts;
-            Ra = (float64_t)(resp_rx_ts - poll_tx_ts);
-            Rb = (float64_t)(final_rx_ts_32 - resp_tx_ts_32);
-            Da = (float64_t)(final_tx_ts - resp_rx_ts);
-            Db = (float64_t)(resp_tx_ts_32 - poll_rx_ts_32);
-            tof_dtu = (int64_t)((Ra * Rb - Da * Db) / (Ra + Rb + Da + Db));
-
-            tof = tof_dtu * DWT_TIME_UNITS;
-            distance = (tof * SPEED_OF_LIGHT)/1.2;// "/1.2"为补偿
-						printf("distance：%4.3f m\r\n", distance);
-            /*增加距离判断的功模:距离小于2m时黄灯闪,距离越短闪的越快20190215*/
-			
-
-             if(distance<=2.70)//距离为1.5m到2m时   
-//							 if(distance<=3.75&& distance>2.5)//距离为1.5m到3m时   
-//							 if(distance<=4.5&& distance>3.5)//距离为1.5m到4m时   
-//							 if(distance<=5.5&& distance>4.5)//距离为1.5m到5m时   
-						{
-						LED_G_Toggle();
-							BEEP_Set();
-						}else
-						{
-					  BEEP_Reset();
-						}
+					//*--------------------------*/
+					resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFE)) << 8) + TX_ANT_DLY;
+					resp_msg_set_ts(&tx_resp_msg[5], poll_rx_ts);
+					resp_msg_set_ts(&tx_resp_msg[9], resp_tx_ts);
+					//*--------------------------*/
 					
-            /* Display computed distance on LCD. */
-//            printf("DIST: %3.2f m\r\n", distance);
-          }
-        }
-        else {
-          /* Clear RX error/timeout events in the DW1000 status register. */
-          DWT_SetSysStatus(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+					/* Write and send the response message. See NOTE 10 below.*/
+					tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+					DWT_WriteTxData(sizeof(tx_resp_msg), tx_resp_msg, 0); /* Zero offset in TX buffer. */
+					DWT_WriteTxFCtrl(sizeof(tx_resp_msg), 0, 0); /* Zero offset in TX buffer, ranging. */
+					status = DWT_StartTx(DWT_TX_DELAYED | DWT_RESPONSE);
 
-          /* Reset RX to properly reinitialise LDE operation. */
-          DWT_RxReset();
-        }
-      }
-    }
-    else {
-      /* Clear RX error/timeout events in the DW1000 status register. */
-      DWT_SetSysStatus(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+					/* If dwt_starttx() returns an error, abandon this ranging exchange and proceed to the next one. See NOTE 11 below. */
+					if (status == HAL_ERROR) {
+						continue;
+					}
 
-      /* Reset RX to properly reinitialise LDE operation. */
-      DWT_RxReset();
-    }
+					/* Poll for reception of expected "final" frame or error/timeout. See NOTE 8 below. */
+					do {
+						status = DWT_GetSysStatus();
+					} while (!(status & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)));
+
+					/* Increment frame sequence number after transmission of the response message (modulo 256). */
+					frame_seq_nb++;
+
+					if (status & SYS_STATUS_RXFCG) {
+		//        LED_R_Toggle(); //考虑到红灯对黄灯的视觉影响，先将红灯注释掉20190215
+						/* Clear good RX frame event and TX frame sent in the DW1000 status register. */
+						DWT_SetSysStatus(SYS_STATUS_RXFCG | SYS_STATUS_TXFRS);
+
+						/* A frame has been received, read it into the local buffer. */
+						frameLen = DWT_ReadData32(DW1000_RX_FINFO, 0x00) & 0x0000007FUL;
+						if (frameLen <= RX_RESP_BUF_LEN) {
+							DWT_ReadRxData(rx_resp_buffer, frameLen, 0);
+						}
+
+						/* Check that the frame is a final message sent by "DS TWR initiator" example.
+						 * As the sequence number field of the frame is not used in this example, it can be zeroed to ease the validation of the frame. */
+						rx_resp_buffer[ALL_MSG_SN_IDX] = 0;
+						
+						if (checkPacket(rx_resp_buffer, rx_final_msg) == 0) {
+							uint32_t poll_tx_ts, resp_rx_ts, final_tx_ts;
+							uint32_t poll_rx_ts_32, resp_tx_ts_32, final_rx_ts_32;
+							float64_t Ra, Rb, Da, Db;
+							int64_t tof_dtu;
+
+							/* Retrieve response transmission and final reception timestamps. */
+							resp_tx_ts  = get_tx_timestamp_u64();
+							final_rx_ts = get_rx_timestamp_u64();
+
+							/* Get timestamps embedded in the final message. */
+							final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_POLL_TX_TS_IDX], &poll_tx_ts);
+							final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_RESP_RX_TS_IDX], &resp_rx_ts);
+							final_msg_get_ts(&rx_resp_buffer[FINAL_MSG_FINAL_TX_TS_IDX], &final_tx_ts);
+
+							/* Compute time of flight. 32-bit subtractions give correct answers even if clock has wrapped. See NOTE 12 below. */
+							poll_rx_ts_32 = (uint32_t)poll_rx_ts;
+							resp_tx_ts_32 = (uint32_t)resp_tx_ts;
+							final_rx_ts_32 = (uint32_t)final_rx_ts;
+							Ra = (float64_t)(resp_rx_ts - poll_tx_ts);
+							Rb = (float64_t)(final_rx_ts_32 - resp_tx_ts_32);
+							Da = (float64_t)(final_tx_ts - resp_rx_ts);
+							Db = (float64_t)(resp_tx_ts_32 - poll_rx_ts_32);
+							tof_dtu = (int64_t)((Ra * Rb - Da * Db) / (Ra + Rb + Da + Db));
+
+							tof = tof_dtu * DWT_TIME_UNITS;
+							distance = (tof * SPEED_OF_LIGHT)/1.2;// "/1.2"为补偿
+							printf("distance：%4.3f m\r\n", distance);
+							/*增加距离判断的功模:距离小于2m时黄灯闪,距离越短闪的越快20190215*/
+				
+
+							 if(distance<=2.70)//距离为1.5m到2m时   
+	//							 if(distance<=3.75&& distance>2.5)//距离为1.5m到3m时   
+	//							 if(distance<=4.5&& distance>3.5)//距离为1.5m到4m时   
+	//							 if(distance<=5.5&& distance>4.5)//距离为1.5m到5m时   
+							{
+							LED_G_Toggle();
+								BEEP_Set();
+							}else
+							{
+							BEEP_Reset();
+							}
+						
+							/* Display computed distance on LCD. */
+	//            printf("DIST: %3.2f m\r\n", distance);
+						}
+					}
+					else {
+						/* Clear RX error/timeout events in the DW1000 status register. */
+						DWT_SetSysStatus(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+
+						/* Reset RX to properly reinitialise LDE operation. */
+						DWT_RxReset();
+					}
+				}
+			}
+			else {
+				/* Clear RX error/timeout events in the DW1000 status register. */
+				DWT_SetSysStatus(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+
+				/* Reset RX to properly reinitialise LDE operation. */
+				DWT_RxReset();
+				
+			}
+		}
   }
 }
 
