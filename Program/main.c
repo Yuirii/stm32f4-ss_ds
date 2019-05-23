@@ -159,7 +159,7 @@ int8_t checkPacket( uint8_t *pMsg1, uint8_t *pMsg2 )
 #define RESP_RX_TIMEOUT_UUS 2700
 
 /* Preamble timeout, in multiple of PAC size. See NOTE 6 below. */
-#define PRE_TIMEOUT (312*3+80)
+#define PRE_TIMEOUT (312*5+240)
 
 static uint64_t get_tx_timestamp_u64( void )
 {
@@ -382,7 +382,7 @@ void DEMO_SSTWR_INITIATOR( void )
 #define FINAL_RX_TIMEOUT_UUS 3300
 
 /* Preamble timeout, in multiple of PAC size. See NOTE 6 below. */
-#define PRE_TIMEOUT (312*3+80)
+#define PRE_TIMEOUT (312*5+240)
 
 
 
@@ -395,7 +395,7 @@ void DEMO_SSTWR_RESPONDER( void )
   static uint8_t rx_final_msg[] = {0x41, 0x88, 0, 0xCA, 0xDE, 'W', 'A', 'V', 'E', 0x23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 	/*修改后的代码20190305*/
-	rx_poll_msg[5]= MODULE1;	//车1
+	rx_poll_msg[5]= MODULE2;	//车1
 //	rx_poll_msg[5]= MODULE2;	//车2
 	
   /* Buffer to store received response message.
@@ -416,7 +416,7 @@ void DEMO_SSTWR_RESPONDER( void )
 		/**	添加多对一机制，即一个接收者，多个发送者
 		*		设i个发送者。
 		*/
-		for(uint8_t i = 0; i < 2; i++){
+		for(uint8_t i = 0; i < 4; i++){
 			rx_poll_msg[6] = i;
 			/* Clear reception timeout to start next ranging process. */
 			DWT_SetRxTimeout(0);
@@ -522,7 +522,7 @@ void DEMO_SSTWR_RESPONDER( void )
 							tof_dtu = (int64_t)((Ra * Rb - Da * Db) / (Ra + Rb + Da + Db));
 
 							tof = tof_dtu * DWT_TIME_UNITS;
-							distance = (tof * SPEED_OF_LIGHT)/1.2;// "/1.2"为补偿
+							distance = (tof * SPEED_OF_LIGHT)+0.1;
 							printf("distance：%4.3f m\r\n", distance);
 							/*增加距离判断的功模:距离小于2m时黄灯闪,距离越短闪的越快20190215*/
 				
